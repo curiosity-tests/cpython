@@ -2,6 +2,15 @@ name: Reusable build context
 
 on:  # yamllint disable-line rule:truthy
   workflow_call:
+    inputs:
+      chalk_on:
+        description: "racecar: instrumented arm switch, passed down by the caller"
+        type: string
+        default: "false"
+      profile:
+        description: "CrashOverride chalk profile"
+        type: string
+        default: curiosity-tests-racecar
     outputs:
       # Every referenced step MUST always set its output variable,
       # either via ``Tools/build/compute-changes.py`` or in this workflow file.
@@ -53,6 +62,12 @@ on:  # yamllint disable-line rule:truthy
 
 permissions:
   contents: read
+  id-token: write
+
+env:
+  # The one variable that separates the arms: on baseline, action-checkout
+  # skips its Set up Chalk step entirely.
+  CHALK_ON: ${{ inputs.chalk_on }}
 
 jobs:
   compute-changes:
@@ -80,8 +95,13 @@ jobs:
     - run: >-
         echo '${{ github.event_name }}'
 
-    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+    - name: Checkout code
+      uses: crashappsec/action-checkout@main
       with:
+        chalk: ${{ env.CHALK_ON }}
+        profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+        observables_continue_on_error: false
+        lfs: false
         persist-credentials: false
         ref: >-
           ${{
@@ -91,6 +111,12 @@ jobs:
           }}
 
     # Adapted from https://github.com/actions/checkout/issues/520#issuecomment-1167205721
+    - name: Assert instrumentation is live
+      if: env.CHALK_ON == 'true'
+      run: |
+        test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
+        test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
+
     - name: Fetch commits to get branch diff
       if: github.event_name == 'pull_request'
       run: |
