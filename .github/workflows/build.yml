@@ -42,7 +42,7 @@ concurrency:
 env:
   # The one variable that separates the arms: on baseline, action-checkout
   # skips its Set up Chalk step entirely.
-  CHALK_ON: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+  CHALK_ON: ${{ inputs.leg == 'instrumented' }}
   FORCE_COLOR: 1
 
 run-name: "Tests ${{ inputs.leg || 'push' }} ${{ inputs.racecar_run }}"
@@ -63,7 +63,7 @@ jobs:
     #
     uses: ./.github/workflows/reusable-context.yml
     with:
-      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      chalk_on: ${{ inputs.leg == 'instrumented' }}
       profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
 
   check-docs:
@@ -72,7 +72,7 @@ jobs:
     if: fromJSON(needs.build-context.outputs.run-docs)
     uses: ./.github/workflows/reusable-docs.yml
     with:
-      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      chalk_on: ${{ inputs.leg == 'instrumented' }}
       profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
 
   check-autoconf-regen:
@@ -198,7 +198,7 @@ jobs:
       - name: Check limited ABI symbols
         run: make check-limited-abi
       - name: Check for unsupported C global variables
-        if: github.event_name == 'pull_request'  # $GITHUB_EVENT_NAME
+        if: ${{ 'push' == 'pull_request' }}  # $GITHUB_EVENT_NAME
         run: make check-c-globals
 
   check-c-api-docs:
@@ -209,7 +209,7 @@ jobs:
       || needs.build-context.outputs.run-docs == 'true'
     uses: ./.github/workflows/reusable-check-c-api-docs.yml
     with:
-      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      chalk_on: ${{ inputs.leg == 'instrumented' }}
       profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
 
   build-ubuntu:
@@ -246,7 +246,7 @@ jobs:
           test-opts: '-u cpu'
     uses: ./.github/workflows/reusable-ubuntu.yml
     with:
-      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      chalk_on: ${{ inputs.leg == 'instrumented' }}
       profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
       bolt-optimizations: ${{ matrix.bolt }}
       free-threading: ${{ matrix.free-threading }}
@@ -259,7 +259,7 @@ jobs:
     if: needs.build-context.outputs.run-ubuntu == 'true'
     uses: ./.github/workflows/reusable-install.yml
     with:
-      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      chalk_on: ${{ inputs.leg == 'instrumented' }}
       profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
 
   build-ubuntu-ssltests:
@@ -352,7 +352,7 @@ jobs:
     if: needs.build-context.outputs.run-emscripten == 'true'
     uses: ./.github/workflows/reusable-emscripten.yml
     with:
-      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      chalk_on: ${{ inputs.leg == 'instrumented' }}
       profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
 
   build-wasi:
@@ -361,7 +361,7 @@ jobs:
     if: needs.build-context.outputs.run-wasi == 'true'
     uses: ./.github/workflows/reusable-wasi.yml
     with:
-      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      chalk_on: ${{ inputs.leg == 'instrumented' }}
       profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
 
   test-hypothesis:
@@ -558,7 +558,7 @@ jobs:
           free-threading: false
     uses: ./.github/workflows/reusable-san.yml
     with:
-      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      chalk_on: ${{ inputs.leg == 'instrumented' }}
       profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
       sanitizer: ${{ matrix.sanitizer }}
       free-threading: ${{ matrix.free-threading }}
@@ -654,7 +654,7 @@ jobs:
             }}
     uses: ./.github/workflows/reusable-cifuzz.yml
     with:
-      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      chalk_on: ${{ inputs.leg == 'instrumented' }}
       profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
       oss-fuzz-project-name: ${{ matrix.oss-fuzz-project-name }}
       sanitizer: ${{ matrix.sanitizer }}
