@@ -36,41 +36,112 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - name: Checkout code
-        uses: crashappsec/action-checkout@e9ff46a65f6403d9d88b87d248c3dfa41550ec75
-        with:
-          chalk: ${{ env.CHALK_ON }}
-          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
-          observables_continue_on_error: false
-          lfs: false
-      - name: Assert instrumentation is live
-        if: env.CHALK_ON == 'true'
-        run: |
-          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
-          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
+    - name: Checkout code
+      uses: crashappsec/action-checkout@e9ff46a65f6403d9d88b87d248c3dfa41550ec75
+      with:
+        chalk: ${{ env.CHALK_ON }}
+        profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+        observables_continue_on_error: false
+        lfs: false
+    - name: Build fuzzers (${{ inputs.sanitizer }})
+      id: build
+      uses: google/oss-fuzz/infra/cifuzz/actions/build_fuzzers@ed23f8af80ff82b25ca67cd9b101e690b8897b3f   # master
+      with:
+        oss-fuzz-project-name: ${{ inputs.oss-fuzz-project-name }}
+        sanitizer: ${{ inputs.sanitizer }}
+    - name: Run fuzzers (${{ inputs.sanitizer }})
+      uses: google/oss-fuzz/infra/cifuzz/actions/run_fuzzers@ed23f8af80ff82b25ca67cd9b101e690b8897b3f   # master
+      with:
+        fuzz-seconds: 600
+        oss-fuzz-project-name: ${{ inputs.oss-fuzz-project-name }}
+        output-sarif: true
+        sanitizer: ${{ inputs.sanitizer }}
+    - name: Upload crash
+      if: failure() && steps.build.outcome == 'success'
+      uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f   # v7.0.0
+      with:
+        name: ${{ inputs.sanitizer }}-artifacts
+        path: ./out/artifacts
+    - name: Upload SARIF
+      if: always() && steps.build.outcome == 'success'
+      uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc   # v4.34.1
+      with:
+        sarif_file: cifuzz-sarif/results.sarif
+        checkout_path: cifuzz-sarif
+    - name: Check observables and crashes
+      if: always() && env.CHALK_ON == 'true'
+      shell: bash
+      run: |
+        set -uo pipefail
+        root="${CURIOSITY_ROOT:-}"
+        home="${CURIOSITY_HOME:-/mnt/curiosity}"
+        obs="${home}/observables"
+        fail=0
 
-      - name: Build fuzzers (${{ inputs.sanitizer }})
-        id: build
-        uses: google/oss-fuzz/infra/cifuzz/actions/build_fuzzers@ed23f8af80ff82b25ca67cd9b101e690b8897b3f # master
-        with:
-          oss-fuzz-project-name: ${{ inputs.oss-fuzz-project-name }}
-          sanitizer: ${{ inputs.sanitizer }}
-      - name: Run fuzzers (${{ inputs.sanitizer }})
-        uses: google/oss-fuzz/infra/cifuzz/actions/run_fuzzers@ed23f8af80ff82b25ca67cd9b101e690b8897b3f # master
-        with:
-          fuzz-seconds: 600
-          oss-fuzz-project-name: ${{ inputs.oss-fuzz-project-name }}
-          output-sarif: true
-          sanitizer: ${{ inputs.sanitizer }}
-      - name: Upload crash
-        if: failure() && steps.build.outcome == 'success'
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: ${{ inputs.sanitizer }}-artifacts
-          path: ./out/artifacts
-      - name: Upload SARIF
-        if: always() && steps.build.outcome == 'success'
-        uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc # v4.34.1
-        with:
-          sarif_file: cifuzz-sarif/results.sarif
-          checkout_path: cifuzz-sarif
+        echo "::group::curiosity layout"
+        echo "CURIOSITY_ROOT=${root:-<unset>}"
+        echo "CURIOSITY_HOME=${home}"
+        ls -la "${obs}" 2>/dev/null || echo "no observables dir at ${obs}"
+        echo "::endgroup::"
+
+        # Observables for THIS run+attempt. The prefix matters: a stale file from an
+        # earlier run on the same mount would otherwise pass.
+        prefix="${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+        shopt -s nullglob
+        mine=("${obs}/${prefix}"*)
+        if [ ${#mine[@]} -eq 0 ]; then
+          mine=("${obs}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-observables"*)
+        fi
+        if [ ${#mine[@]} -eq 0 ]; then
+          echo "::error::no observables for run ${prefix} in ${obs} - instrumentation produced nothing"
+          fail=1
+        else
+          echo "observables present: ${#mine[@]} file(s)"
+          printf '  %s\n' "${mine[@]}"
+        fi
+
+        for f in "${mine[@]}"; do
+          case "$f" in
+            *.jsonl|*.json|*.combined)
+              if ! jq --slurp "." "$f" > /dev/null 2>&1; then
+                echo "::error::observables do not parse: $f"
+                fail=1
+              fi
+              ;;
+          esac
+        done
+
+        # Crash thresholds copied from check-run: a few null frames are noise, more than
+        # five is a stack walk into nothing.
+        for f in "${root}"/log/co-host*.log "${home}"/log/co-host*.log; do
+          [ -f "$f" ] || continue
+          echo "Asserting that there is no crash in $f"
+          if [ "$(grep -c 'p 00000000' "$f" 2>/dev/null || echo 0)" -gt 5 ] \
+            || [ "$(grep -E -c 'FATAL: Uncaught signal|Address not mapped at|RAX 0x.*RBX 0x' "$f" 2>/dev/null || echo 0)" -gt 1 ]; then
+            echo "::error::crash signature in $f"
+            grep -E 'FATAL: Uncaught signal|Address not mapped at' "$f" | head -5 || true
+            fail=1
+          fi
+        done
+
+        cores=("${root}"/coredump.* "${home}"/coredump.*)
+        if [ ${#cores[@]} -gt 0 ]; then
+          echo "::error::coredump present: ${cores[*]}"
+          fail=1
+        fi
+
+        for f in "${root}"/runc.log "${root}"/runc.global.log \
+                 "${home}"/runc.log "${home}"/runc.global.log; do
+          [ -f "$f" ] || continue
+          if grep -q '^E:' "$f"; then
+            echo "::error::error in $f"
+            grep '^E:' "$f" | head -5
+            fail=1
+          fi
+        done
+
+        if [ "$fail" -ne 0 ]; then
+          echo "::error::instrumentation check FAILED"
+          exit 1
+        fi
+        echo "instrumentation check passed"
